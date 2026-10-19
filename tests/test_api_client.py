@@ -57,7 +57,7 @@ class FakeApi:
         self.reply = reply or (lambda r: httpx.Response(200, json=envelope([])))
         self.token = jwt(token_claims or {"region": "us"})
         self.auth_ok = auth_ok
-        self.scopes_by_host = scopes_by_host or {US: ["farm-us:acme"]}
+        self.scopes_by_host = scopes_by_host or {US: ["farm-us:example"]}
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -134,7 +134,7 @@ async def test_multi_scope_key_queries_all_scopes(monkeypatch):
 
 
 async def test_scopes_probe_other_regions_when_token_region_is_empty(monkeypatch):
-    fake = FakeApi(token_claims={}, scopes_by_host={US: ["farm-us:acme"]})
+    fake = FakeApi(token_claims={}, scopes_by_host={US: ["farm-us:example"]})
     await _call(monkeypatch, fake, "hec_query_events", {})
     assert fake.api()[0].url.host == US
 
