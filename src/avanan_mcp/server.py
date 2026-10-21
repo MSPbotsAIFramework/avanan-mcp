@@ -72,7 +72,8 @@ def get_client_from_context() -> HecClient | None:
 class GatewayCredentialsMiddleware:
     """Reads X-Checkpoint-* headers on /mcp requests into the request context.
 
-    Missing required headers -> 401 listing them; unknown region -> 400.
+    Missing required headers -> 401 listing them. An unknown region does not block
+    the request (tools/list must work with any values); tools report it instead.
     """
 
     def __init__(self, app: ASGIApp):
@@ -102,19 +103,13 @@ class GatewayCredentialsMiddleware:
             )(scope, receive, send)
             return
 
+        header_error = None
         if region_header and region is None:
-            await JSONResponse(
-                {
-                    "error": "Invalid region",
-                    "message": f"{HEADER_REGION} must be one of: {', '.join(REGION_GATEWAYS)}",
-                    "allowed_values": list(REGION_GATEWAYS),
-                },
-                status_code=400,
-            )(scope, receive, send)
-            return
+            # region stays None (auto-detect), a safe value; tools never reach the API.
+            header_error = f"{HEADER_REGION} must be one of: {', '.join(REGION_GATEWAYS)}"
 
         request_id = (request.headers.get("x-request-id") or "").strip()[:64] or uuid.uuid4().hex[:12]
-        creds_token = _credentials_var.set(HecCredentials(client_id, client_secret, region))
+        creds_token = _credentials_var.set(HecCredentials(client_id, client_secret, region, header_error))
         rid_token = request_id_var.set(request_id)
         try:
             await self.app(scope, receive, send)

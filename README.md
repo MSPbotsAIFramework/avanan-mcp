@@ -31,8 +31,9 @@ Where to get them:
   a token at the EU gateway, uses the region carried in the token, and if that region returns
   no scopes it tries the other regional gateways.
 
-A request to `/mcp` without the required headers gets HTTP 401 listing them; an unknown region
-gets HTTP 400.
+A request to `/mcp` without the required headers gets HTTP 401 listing them. An unknown region
+does not block `tools/list`; tools then return an `invalid_argument` error naming the allowed
+regions.
 
 ## Tools
 

@@ -51,11 +51,25 @@ def test_missing_header_returns_401(drop):
     assert resp.json()["required_headers"] == list(CREDS)
 
 
-def test_unknown_region_returns_400():
+def test_unknown_region_still_lists_tools():
+    # The admin console refreshes the tool catalog with placeholder header values.
+    headers = {"X-Checkpoint-Client-Id": "placeholder", "X-Checkpoint-Client-Secret": "placeholder", "X-Checkpoint-Region": "placeholder"}
     with _client() as client:
-        resp = client.post("/mcp", json=LIST_TOOLS, headers=MCP_HEADERS | CREDS | {"X-Checkpoint-Region": "mars"})
-    assert resp.status_code == 400
-    assert "uk" in resp.json()["allowed_values"]
+        resp = client.post("/mcp", json=LIST_TOOLS, headers=MCP_HEADERS | headers)
+    assert resp.status_code == 200
+    assert "hec_query_events" in resp.text
+
+
+def test_unknown_region_is_reported_by_tools():
+    seen = _run_middleware(BASE + [(b"x-checkpoint-region", b"mars")])
+    assert "uk" in seen["client"].header_error
+    assert seen["credentials"].region is None
+    call = {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "hec_query_events", "arguments": {}}}
+    with _client() as client:
+        resp = client.post("/mcp", json=call, headers=MCP_HEADERS | CREDS | {"X-Checkpoint-Region": "mars"})
+    assert resp.status_code == 200
+    assert '\\"invalid_argument\\"' in resp.text
+    assert "X-Checkpoint-Region must be one of:" in resp.text
 
 
 def test_tools_list_over_http():
