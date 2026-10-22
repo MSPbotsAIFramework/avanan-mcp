@@ -13,6 +13,7 @@
 # limitations under the License.
 """Shared argument types, result shaping and the error-handling wrapper."""
 
+import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -21,6 +22,7 @@ from typing import Annotated, Any
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
+from .._json import compact as compact_json
 from .._json import dump_json_capped, error_envelope
 from ..api_client import HecClient, HecError
 
@@ -69,6 +71,20 @@ def data(payload: Any) -> Any:
     return payload.get("responseData") if isinstance(payload, dict) and "responseData" in payload else payload
 
 
+def prune(value: Any) -> Any:
+    """Drop null, empty-string, empty-list and empty-object values, so a whole batch fits more often."""
+    if isinstance(value, dict):
+        kept = {k: prune(v) for k, v in value.items()}
+        return {k: v for k, v in kept.items() if v not in (None, "", [], {})}
+    if isinstance(value, list):
+        return [prune(v) for v in value]
+    return value
+
+
+# Marks a scroll list for run_tool: Avanan has no page size, so a cut batch gets its own note.
+SCROLL_LIST = "_scroll_list"
+
+
 def list_result(payload: Any) -> dict[str, Any]:
     """Shape ``{responseEnvelope, responseData}`` as ``{items, count, total, has_more, scroll_id}``."""
     items = data(payload)
@@ -76,6 +92,7 @@ def list_result(payload: Any) -> dict[str, Any]:
         items = []
     elif not isinstance(items, list):
         items = [items]
+    items = [prune(i) for i in items]
     env = payload.get("responseEnvelope", {}) if isinstance(payload, dict) else {}
     total = env.get("totalRecordsNumber")
     scroll = env.get("scrollId") or None
@@ -86,6 +103,7 @@ def list_result(payload: Any) -> dict[str, Any]:
         "total": total,
         "has_more": has_more,
         "scroll_id": scroll if has_more else None,
+        SCROLL_LIST: True,
     }
 
 
@@ -124,7 +142,26 @@ async def run_tool(
         logger.warning("tool=%s outcome=unexpected error=%s ms=%d", name, type(e).__name__, _ms(started))
         return error_envelope("upstream_error", f"Unexpected error: {type(e).__name__}", True)
     logger.info("tool=%s outcome=ok ms=%d", name, _ms(started))
-    return result if isinstance(result, str) else dump_json_capped(result)
+    if isinstance(result, str):
+        return result
+    if isinstance(result, dict) and result.pop(SCROLL_LIST, False):
+        return _scroll_capped(result)
+    return dump_json_capped(result)
+
+
+def _scroll_capped(result: dict[str, Any]) -> str:
+    """Cap a scroll batch. A cut batch drops scroll_id (following it would skip the cut records)
+    and says how to get the rest: the API has no page size to ask for a smaller batch."""
+    payload = json.loads(dump_json_capped(result))
+    if isinstance(payload, dict) and payload.get("truncated") and "original_count" in payload:
+        payload.pop("retry_page_size", None)
+        payload["note"] = (
+            f"Only {payload.get('count', len(payload.get('items') or []))} of {payload['original_count']} records "
+            "of this batch fit the response size limit, and the API has no page size to ask for a smaller batch. "
+            "scroll_id was left out because it would skip the rest. Narrow the query (a shorter startDate / "
+            "endDate window or more filters) and run it again to see the remaining records."
+        )
+    return compact_json(payload)
 
 
 def _ms(started: float) -> int:

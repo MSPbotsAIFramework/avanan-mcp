@@ -38,7 +38,9 @@ regions.
 ## Tools
 
 All tools return a JSON string. List tools return `{items, count, total, has_more, scroll_id}`;
-pass `scroll_id` back as `scrollId` for the next page. With a key that covers several tenants,
+pass `scroll_id` back as `scrollId` for the next page. The API has no page size: if a batch is too large for one response, the first records
+that fit are returned without `scroll_id` (following it would skip the rest of the batch), and the note
+says to narrow the query. Empty values are left out of list records. With a key that covers several tenants,
 queries run across all of them and action tools need a `scope` (`farm:tenant`).
 
 | Tool | Purpose | Parameters (required in **bold**) |

@@ -205,3 +205,46 @@ def test_token_is_per_client_instance():
     b = HecClient(HecCredentials("a", "s"))
     a._token = "only-a"
     assert b._token is None
+
+
+
+# ---- scroll batches cut to fit the size limit -----------------------------------------------------------
+# Checklist: a cut batch drops scroll_id (it would skip the cut records) and has no retry_page_size (there is
+# no page size), its note says how to see the rest; an uncut batch still pages by scroll_id; empty values are
+# dropped and zero / false kept; the internal marker never shows.
+
+EXTRA = {}
+
+
+def _big_events(n):
+    return [{"eventId": f"e{i:04d}", "type": "phishing", **{f"field{k}": f"value {k}" for k in range(40)}} for i in range(n)]
+
+
+async def test_cut_batch_drops_scroll_id_and_says_how_to_get_the_rest(monkeypatch):
+    page = envelope(_big_events(300), total=900, scroll="scroll-2")
+    result = await _call(monkeypatch, FakeApi(lambda r: httpx.Response(200, json=page)), "hec_query_events", EXTRA)
+    assert result["truncated"] is True and 0 < len(result["items"]) < 300
+    assert "scroll_id" not in result and "retry_page_size" not in result
+    assert "startDate" in result["note"] and "would skip" in result["note"]
+    assert "_scroll_list" not in result
+
+
+async def test_uncut_batch_still_pages_by_scroll_id(monkeypatch):
+    page = envelope([{"eventId": "e1"}, {"eventId": "e2"}], total=5, scroll="scroll-2")
+    result = await _call(monkeypatch, FakeApi(lambda r: httpx.Response(200, json=page)), "hec_query_events", EXTRA)
+    assert (result["scroll_id"], result["has_more"], result["count"]) == ("scroll-2", True, 2)
+    assert "truncated" not in result and "_scroll_list" not in result
+
+
+async def test_last_batch_has_no_scroll_id(monkeypatch):
+    page = envelope([{"eventId": "e1"}], total=1, scroll="")
+    result = await _call(monkeypatch, FakeApi(lambda r: httpx.Response(200, json=page)), "hec_query_events", EXTRA)
+    assert result["has_more"] is False and result.get("scroll_id") is None
+
+
+async def test_empty_values_are_dropped_but_zero_and_false_kept(monkeypatch):
+    row = {"eventId": "e1", "description": "", "tags": [], "extra": {}, "owner": None, "score": 0, "isRead": False,
+           "nested": {"keep": "x", "drop": None}}
+    page = envelope([row], total=1)
+    result = await _call(monkeypatch, FakeApi(lambda r: httpx.Response(200, json=page)), "hec_query_events", EXTRA)
+    assert result["items"] == [{"eventId": "e1", "score": 0, "isRead": False, "nested": {"keep": "x"}}]
